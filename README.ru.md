@@ -10,7 +10,7 @@
 Resilience-pipeline для PHP: композирует [`rasuvaeff/retry`](https://github.com/rasuvaeff/retry),
 [`rasuvaeff/circuit-breaker`](https://github.com/rasuvaeff/circuit-breaker) и
 [`rasuvaeff/bulkhead`](https://github.com/rasuvaeff/bulkhead) в правильном
-порядке со встроенным exception-глюкодом — PHP-аналог `ResiliencePipeline`
+порядке со встроенным связующим exception-кодом — PHP-аналог `ResiliencePipeline`
 из Polly / `Decorators` из resilience4j.
 
 [English version](README.md)
@@ -21,7 +21,7 @@ Resilience-pipeline для PHP: композирует [`rasuvaeff/retry`](https
 ## Зачем
 
 Три листовых пакета композируются обычными замыканиями — но *правильная*
-композиция требует глюкода, в котором легко ошибиться:
+композиция требует связующего кода, в котором легко ошибиться:
 
 | Правило | Почему |
 |---|---|
@@ -32,7 +32,7 @@ Resilience-pipeline для PHP: композирует [`rasuvaeff/retry`](https
 | Breaker снаружи bulkhead | открытый контур отклоняет вызов до того, как запрошен слот |
 | Breaker внутри или снаружи retry | два легитимных порядка с разной семантикой — см. ниже |
 
-`Pipeline` фиксирует порядок вложенности и добавляет глюкод автоматически,
+`Pipeline` фиксирует порядок вложенности и добавляет связующий код автоматически,
 не модифицируя переданные вами объекты.
 
 ## Требования
@@ -127,7 +127,7 @@ $pipeline->call(
   тратят бюджет конкурентности;
 - **breaker вокруг bulkhead** — открытый контур отклоняет вызов до
   запроса слота;
-- **retry снаружи** — с добавленным глюкодом.
+- **retry снаружи** — с добавленным связующим кодом.
 
 ### Breaker внутри или снаружи retry
 
@@ -137,8 +137,9 @@ $pipeline->call(
 | Контур открылся посреди цикла | мгновенно обрубает оставшиеся попытки | не может прервать цикл |
 | Transient-сбой, исправленный повтором | всё равно попадает в failure ratio | никогда не доходит до failure ratio |
 | Выбирать, когда | breaker должен видеть реальное здоровье per-call | breaker должен судить операции, а не попытки |
+| `isFailure` получает | собственное исключение callback'а (и, поскольку breaker оборачивает bulkhead, `BulkheadFullException`) | то, что бросает retry-цикл — `RetryExhausted` при исчерпании (последнее downstream-исключение в его `lastException`), никогда исключение callback'а напрямую |
 
-### Exception-глюкод
+### Связующий exception-код
 
 `build()` добавляет `stopIf`-предикаты к **копии** вашего retry-builder'а
 (`Retry` immutable — переданный экземпляр не модифицируется, ваши

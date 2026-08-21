@@ -43,7 +43,7 @@ docker run --rm -v "$PWD":/app -w /app composer:2 composer release-check
 Or with Make: `make build`, `make cs-fix`, `make psalm`, `make test`,
 `make test-coverage`, `make mutation`, `make release-check`.
 
-All four leaf packages are normal Packagist dependencies — no path-repo, no
+All four dependencies (retry, circuit-breaker, bulkhead, duration) are normal Packagist packages — no path-repo, no
 monorepo-root mount needed. `composer.lock` is gitignored (library).
 
 ## Invariants & gotchas

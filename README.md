@@ -137,6 +137,7 @@ The default is `retry(circuitBreaker(bulkhead(callback)))`:
 | Open circuit mid-loop | cuts the remaining attempts instantly | cannot cut the loop short |
 | Transient blip fixed by a retry | still counts toward the failure ratio | never reaches the failure ratio |
 | Choose when | the breaker should see real per-call health | the breaker should judge operations, not attempts |
+| `isFailure` receives | the callback's own exception (and, breaker-wrapping-bulkhead, `BulkheadFullException`) | what the retry loop throws — `RetryExhausted` on exhaustion (last downstream exception in its `lastException`), never the callback's exception directly |
 
 ### Exception glue
 

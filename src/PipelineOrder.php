@@ -17,7 +17,12 @@ namespace Rasuvaeff\Resilience;
  * - `BreakerOutsideRetry`: the whole retry loop is one breaker call. The
  *   breaker counts one outcome per *logical operation* (a transient blip
  *   fixed by a retry never reaches the failure ratio), but while retrying,
- *   the breaker cannot cut the loop short.
+ *   the breaker cannot cut the loop short. Note for the breaker's
+ *   `isFailure` classifier: in this order it receives what the retry loop
+ *   throws — `RetryExhausted` on exhaustion (with the last downstream
+ *   exception in its `lastException`), never the callback's own exception
+ *   directly and never `BulkheadFullException` (the glue stops the loop on
+ *   it, and `RetryExhausted` is what reaches the breaker).
  *
  * @api
  */
