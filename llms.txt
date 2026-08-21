@@ -1,0 +1,63 @@
+# rasuvaeff/resilience
+
+Resilience pipeline for PHP: composes rasuvaeff/retry,
+rasuvaeff/circuit-breaker, and rasuvaeff/bulkhead in the correct order with
+the exception glue built in. Namespace `Rasuvaeff\Resilience`. The PHP
+analogue of Polly's ResiliencePipeline / resilience4j's Decorators.
+
+## Install
+
+```bash
+composer require rasuvaeff/resilience
+```
+
+## Rules
+
+- PHP 8.3+, `declare(strict_types=1)`, immutable `final readonly` classes.
+- Default nesting: `retry(circuitBreaker(bulkhead(callback)))`. Bulkhead is
+  INNERMOST — a slot is occupied only while the callback runs, re-requested
+  per attempt, free during retry sleeps. The breaker wraps the bulkhead, so
+  an open circuit rejects before a slot is requested.
+- `build()` appends glue `stopIf` predicates to a COPY of the retry builder
+  (`Retry` is immutable — the passed instance is never modified, user
+  predicates are preserved): stop on `CircuitOpenException` (always), on the
+  breaker's `StorageFailure` (always), and on `BulkheadFullException`
+  (default; opt back into retrying with `->retryOnBulkheadFull()`).
+- `->breakerOutsideRetry()`: the whole retry loop becomes ONE breaker
+  outcome (a transient blip fixed by a retry never reaches the failure
+  ratio; the trade-off is that an open circuit cannot cut the loop short).
+  Default (`BreakerInsideRetry`): every attempt is one outcome and an open
+  circuit stops the remaining attempts instantly.
+- Every layer is optional; an empty pipeline is a plain call.
+- Terminal exceptions surface UNCHANGED (`RetryExhausted`,
+  `CircuitOpenException`, `BulkheadFullException`, `StorageFailure`, or the
+  callback's own); the optional `fallback` receives whichever ended the
+  call, at the outermost level.
+- The breaker's `isFailure` classifier sees `BulkheadFullException` (the
+  breaker wraps the bulkhead) — classify it as not-a-failure unless local
+  saturation should deliberately open the circuit.
+- The pipeline itself does no I/O and defines no exception types.
+
+## API reference
+
+```php
+use Rasuvaeff\Resilience\Pipeline;
+use Rasuvaeff\Retry\Retry;
+
+$pipeline = Pipeline::for('stripe')          // non-empty name, for diagnostics
+    ->bulkhead($sharedBulkhead)              // ?Rasuvaeff\Bulkhead\SharedBulkhead
+    ->retry(Retry::new()->maxAttempts(maxAttempts: 4)->withExponential(baseMs: 100, multiplier: 2.0, capMs: 5_000))
+    ->circuitBreaker($circuitBreaker)        // ?Rasuvaeff\CircuitBreaker\CircuitBreaker
+    ->breakerOutsideRetry()                  // optional order switch
+    ->retryOnBulkheadFull()                  // optional glue opt-in
+    ->build();                               // CompiledPipeline (immutable, reusable)
+
+$result = $pipeline->call(fn(): mixed => doWork());
+$result = $pipeline->call(
+    callback: fn(): mixed => doWork(),
+    fallback: fn(\Throwable $e): mixed => degrade($e),
+);
+$pipeline->name(); // 'stripe'
+```
+
+`PipelineOrder` enum: `BreakerInsideRetry` (default) | `BreakerOutsideRetry`.

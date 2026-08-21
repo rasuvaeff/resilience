@@ -1,0 +1,274 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-latest
+
+    outputs:
+      run: ${{ steps.filter.outputs.run }}
+      mutation: ${{ steps.filter.outputs.mutation }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect relevant changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="$BASE_SHA"
+          elif [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            # First push to a new branch: there is no base to diff against, so
+            # every filter says yes. Both outputs must be set here — an unset
+            # one reads as false downstream and silently skips its job.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "mutation=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            BASE="$BEFORE_SHA"
+          fi
+
+          if git diff --quiet "$BASE" "$GITHUB_SHA" -- \
+            src tests config examples composer.json testo.php psalm.xml \
+            rector.php .php-cs-fixer.php infection.json5 \
+            .github/workflows/build.yml; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Mutation is by far the most expensive job, so it gets a narrower
+          # filter than the rest: only what can change which mutants exist or
+          # which tests kill them. Style and static-analysis configs, examples
+          # and this workflow cannot. Explicit trade: editing the mutation STEP
+          # here no longer re-runs it — a break surfaces on the next source
+          # change or a manual re-run, which beats paying the full mutation run
+          # on every docs and CI edit.
+          if git diff --quiet "$BASE" "$GITHUB_SHA" -- \
+            src tests composer.json testo.php infection.json5; then
+            echo "mutation=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mutation=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Not gated on 'changes' like the other jobs below: when a matrix job's own
+  # `if` is false, GitHub Actions skips it as ONE unit and posts a single
+  # check run named literally "PHP ${{ matrix.php }}" (the unexpanded
+  # template), never the per-version names ("PHP 8.3" etc.) that branch
+  # protection requires. Those required checks then sit in Pending forever
+  # and the PR is permanently unmergeable. Non-matrix jobs don't have this
+  # problem, so they stay gated.
+  build:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php:
+          - '8.3'
+          - '8.4'
+          - '8.5'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: json, mbstring
+          tools: composer:v2
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Build
+        run: composer build
+
+  prefer-lowest:
+    name: Prefer lowest
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run == 'true') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: json, mbstring
+          tools: composer:v2
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: composer update --prefer-lowest --prefer-stable --no-interaction --no-progress
+
+      - name: Build
+        run: composer build
+
+  coverage:
+    name: Coverage & Mutation
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.mutation == 'true') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          coverage: pcov
+          extensions: json, mbstring
+          tools: composer:v2
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Test with coverage
+        run: composer test:coverage:ci
+
+      - name: Mutation testing
+        run: composer mutation
+
+  compatibility:
+    name: Backward compatibility
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run == 'true') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          coverage: none
+          extensions: json, mbstring, bcmath, intl
+          tools: composer:v2
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Backward compatibility check
+        # Real breaks pass only across an intentional compatibility boundary:
+        # a higher major after 1.0, or a higher minor while the package is
+        # still below 1.0. The top version heading in CHANGELOG.md declares
+        # that boundary; patch releases stay gated on a clean report.
+        #
+        # A report made up ENTIRELY of "[BC] SKIPPED: ..." lines is also a
+        # pass: SKIPPED means roave/better-reflection could not statically
+        # parse a construct (observed for enum-case and `new Expr()` default
+        # values in promoted constructor properties) - it is not a detected
+        # break. Once a class contains this pattern, EVERY future run reports
+        # the identical SKIPPED finding against ANY --from tag, including a
+        # diff against itself, so gating on it would permanently block every
+        # subsequent PR regardless of content. A single genuine
+        # "[BC] CHANGED:"/"[BC] REMOVED:"/"[BC] ADDED:" line anywhere in the
+        # report still fails the build.
+        run: |
+          LATEST="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$LATEST" ]; then
+            echo "No previous tag - skipping BC check"
+            exit 0
+          fi
+          CODE=0
+          OUTPUT="$(composer bc-check -- --from="$LATEST" --install-development-dependencies 2>&1)" || CODE=$?
+          printf '%s\n' "$OUTPUT"
+          if [ "$CODE" -eq 0 ]; then
+            exit 0
+          fi
+          NEXT="$(grep -m1 -oE '## [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          LATEST_VERSION="${LATEST#v}"
+          LATEST_MAJOR="${LATEST_VERSION%%.*}"
+          LATEST_MINOR="${LATEST_VERSION#*.}"; LATEST_MINOR="${LATEST_MINOR%%.*}"
+          NEXT_MAJOR="${NEXT%%.*}"
+          NEXT_MINOR="${NEXT#*.}"; NEXT_MINOR="${NEXT_MINOR%%.*}"
+          # Only code 3 means "breaks detected". Anything else is roave itself
+          # failing (128 when it cannot clone or resolve the old tag), and a
+          # crash must never be waved through by a CHANGELOG heading or a
+          # SKIPPED-only report.
+          if [ "$CODE" -eq 3 ] && [ -n "$NEXT_MAJOR" ] && {
+            [ "$NEXT_MAJOR" -gt "$LATEST_MAJOR" ] ||
+            { [ "$LATEST_MAJOR" -eq 0 ] && [ "$NEXT_MAJOR" -eq 0 ] && [ "$NEXT_MINOR" -gt "$LATEST_MINOR" ]; }
+          }; then
+            echo "CHANGELOG declares $NEXT - an intentional compatibility boundary over $LATEST; BC breaks are expected, treating as pass."
+            exit 0
+          fi
+          if [ "$CODE" -eq 3 ]; then
+            TOTAL="$(printf '%s\n' "$OUTPUT" | { grep -cE '^\[BC\] ' || true; })"
+            SKIPPED="$(printf '%s\n' "$OUTPUT" | { grep -cE '^\[BC\] SKIPPED:' || true; })"
+            if [ "$TOTAL" -gt 0 ] && [ "$TOTAL" -eq "$SKIPPED" ]; then
+              echo "All $TOTAL finding(s) are roave/better-reflection SKIPPED entries (a static-analysis limitation, not a detected break); treating as pass."
+              exit 0
+            fi
+          fi
+          exit "$CODE"
