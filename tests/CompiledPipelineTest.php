@@ -7,13 +7,19 @@ namespace Rasuvaeff\Resilience\Tests;
 use Rasuvaeff\Bulkhead\BulkheadFullException;
 use Rasuvaeff\Bulkhead\InMemoryBulkheadStore;
 use Rasuvaeff\Bulkhead\SharedBulkhead;
+use Rasuvaeff\CircuitBreaker\Admission;
+use Rasuvaeff\CircuitBreaker\AdmissionResult;
 use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
 use Rasuvaeff\CircuitBreaker\CircuitOpenException;
 use Rasuvaeff\CircuitBreaker\CircuitState;
+use Rasuvaeff\CircuitBreaker\CircuitTransition;
 use Rasuvaeff\CircuitBreaker\Clock\FakeClock;
 use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Outcome;
+use Rasuvaeff\CircuitBreaker\OutcomeResult;
 use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\CircuitBreaker\StateRecord;
 use Rasuvaeff\CircuitBreaker\Storage;
 use Rasuvaeff\CircuitBreaker\StorageFailure;
 use Rasuvaeff\Duration\Duration;
@@ -22,6 +28,7 @@ use Rasuvaeff\Resilience\Pipeline;
 use Rasuvaeff\Retry\Retry;
 use Rasuvaeff\Retry\RetryExhausted;
 use Rasuvaeff\Retry\Sleeper\FakeSleeper;
+use Rasuvaeff\Retry\Sleeper\SleeperInterface;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -190,7 +197,7 @@ final class CompiledPipelineTest
             maxWait: Duration::zero(),
         );
         $activeDuringSleep = null;
-        $sleeper = new class ($store, $activeDuringSleep) implements \Rasuvaeff\Retry\Sleeper\SleeperInterface {
+        $sleeper = new class ($store, $activeDuringSleep) implements SleeperInterface {
             public function __construct(
                 private readonly InMemoryBulkheadStore $store,
                 private ?int &$activeDuringSleep,
@@ -277,6 +284,76 @@ final class CompiledPipelineTest
         Assert::same($result, 'ok');
         Assert::same($calls, 3);
         Assert::same($breaker->state(), CircuitState::Closed);
+    }
+
+    /**
+     * With the breaker outside, an exhausted retry loop lands on the breaker
+     * as exactly ONE failure outcome - not one per attempt. This is the
+     * observable difference the order switch exists for.
+     */
+    public function breakerOutsideRetryRecordsExactlyOneOutcomeForAnExhaustedLoop(): void
+    {
+        $breaker = $this->breaker(failures: 5, window: 10);
+        $pipeline = Pipeline::for('svc')
+            ->retry($this->retry(maxAttempts: 3))
+            ->circuitBreaker($breaker)
+            ->breakerOutsideRetry()
+            ->build();
+        $caught = null;
+
+        try {
+            $pipeline->call(static fn(): string => throw new \RuntimeException('down'));
+        } catch (\Throwable $e) {
+            $caught = $e;
+        }
+
+        Assert::instanceOf($caught, RetryExhausted::class);
+        Assert::same($breaker->metrics()->failures(), 1);
+    }
+
+    public function breakerOutsideRetryWithoutABreakerIsAPlainRetry(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->retry($this->retry(maxAttempts: 2))
+            ->breakerOutsideRetry()
+            ->build();
+        $calls = 0;
+
+        $result = $pipeline->call(function () use (&$calls): string {
+            if (++$calls < 2) {
+                throw new \RuntimeException('transient');
+            }
+
+            return 'ok';
+        });
+
+        Assert::same($result, 'ok');
+        Assert::same($calls, 2);
+    }
+
+    /** A second call to the same setter replaces the previous layer. */
+    public function settersReplaceOnRepeatedCalls(): void
+    {
+        $result = Pipeline::for('svc')
+            ->bulkhead($this->fullBulkhead())
+            ->bulkhead($this->freeBulkhead())
+            ->retry($this->retry(maxAttempts: 1))
+            ->retry($this->retry(maxAttempts: 3))
+            ->circuitBreaker($this->openedBreaker(new FakeClock()))
+            ->circuitBreaker($this->breaker(failures: 5, window: 10))
+            ->build()
+            ->call(function (): string {
+                static $calls = 0;
+                if (++$calls < 3) {
+                    throw new \RuntimeException('transient');
+                }
+
+                return 'ok';
+            });
+
+        // The full bulkhead, the 1-attempt retry, and the opened breaker were
+        // all replaced - only their successors can produce this outcome.
+        Assert::same($result, 'ok');
     }
 
     public function fallbackReceivesTheTerminalException(): void
@@ -366,7 +443,7 @@ final class CompiledPipelineTest
         Assert::same($calls, 3);
     }
 
-    private function retry(int $maxAttempts, ?\Rasuvaeff\Retry\Sleeper\SleeperInterface $sleeper = null): Retry
+    private function retry(int $maxAttempts, ?SleeperInterface $sleeper = null): Retry
     {
         return Retry::new()
             ->maxAttempts(maxAttempts: $maxAttempts)
@@ -402,6 +479,17 @@ final class CompiledPipelineTest
         return $breaker;
     }
 
+    private function freeBulkhead(): SharedBulkhead
+    {
+        return new SharedBulkhead(
+            name: 'svc',
+            maxConcurrent: 1,
+            store: new InMemoryBulkheadStore(),
+            lease: Duration::seconds(60),
+            maxWait: Duration::zero(),
+        );
+    }
+
     private function fullBulkhead(): SharedBulkhead
     {
         $store = new InMemoryBulkheadStore();
@@ -425,35 +513,35 @@ final class CompiledPipelineTest
                 BreakerConfig $config,
                 \DateTimeImmutable $now,
                 string $attemptId,
-            ): \Rasuvaeff\CircuitBreaker\AdmissionResult {
+            ): AdmissionResult {
                 throw new \RuntimeException('redis gone');
             }
 
             #[\Override]
             public function recordOutcome(
                 string $key,
-                \Rasuvaeff\CircuitBreaker\Outcome $outcome,
+                Outcome $outcome,
                 BreakerConfig $config,
                 \DateTimeImmutable $now,
-                \Rasuvaeff\CircuitBreaker\Admission $admission,
+                Admission $admission,
                 \DateTimeImmutable $admittedAt,
                 string $attemptId,
-            ): \Rasuvaeff\CircuitBreaker\OutcomeResult {
+            ): OutcomeResult {
                 throw new \RuntimeException('redis gone');
             }
 
             #[\Override]
-            public function snapshot(string $key): \Rasuvaeff\CircuitBreaker\StateRecord
+            public function snapshot(string $key): StateRecord
             {
                 throw new \RuntimeException('redis gone');
             }
 
             #[\Override]
             public function forceState(
-                string $key,
-                \Rasuvaeff\CircuitBreaker\CircuitState $state,
+                string             $key,
+                CircuitState       $state,
                 \DateTimeImmutable $now,
-            ): ?\Rasuvaeff\CircuitBreaker\CircuitTransition {
+            ): ?CircuitTransition {
                 return null;
             }
         };
