@@ -55,7 +55,7 @@ final class CompiledPipelineTest
     {
         $pipeline = Pipeline::for('svc')->build();
 
-        Assert::same($pipeline->call('strrev'), '');
+        Assert::same($pipeline->call('pi'), M_PI);
     }
 
     public function retryAloneRetriesTransientFailures(): void
@@ -190,7 +190,7 @@ final class CompiledPipelineTest
             maxWait: Duration::zero(),
         );
         $activeDuringSleep = null;
-        $sleeper = new class($store, $activeDuringSleep) implements \Rasuvaeff\Retry\Sleeper\SleeperInterface {
+        $sleeper = new class ($store, $activeDuringSleep) implements \Rasuvaeff\Retry\Sleeper\SleeperInterface {
             public function __construct(
                 private readonly InMemoryBulkheadStore $store,
                 private ?int &$activeDuringSleep,

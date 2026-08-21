@@ -91,7 +91,7 @@ final readonly class CompiledPipeline
      */
     public function call(callable $callback, ?callable $fallback = null): mixed
     {
-        $operation = $callback instanceof \Closure ? $callback : \Closure::fromCallable($callback);
+        $operation = $callback(...);
 
         // Innermost: a slot is occupied only while the callback actually
         // runs — never while retry sleeps between attempts, so waiting

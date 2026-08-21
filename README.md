@@ -50,31 +50,69 @@ composer require rasuvaeff/resilience
 
 ## Usage
 
-```php
+The block below is executable — `composer build` runs it against the real
+API via [rasuvaeff/doc-exec](https://github.com/rasuvaeff/doc-exec), so the
+`// =>` values cannot rot. It uses the in-memory backends; in production you
+point the bulkhead and the breaker at Redis/APCu stores — the pipeline code
+does not change.
+
+```php doc-exec
+use Rasuvaeff\Bulkhead\InMemoryBulkheadStore;
 use Rasuvaeff\Bulkhead\SharedBulkhead;
+use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\CircuitOpenException;
+use Rasuvaeff\CircuitBreaker\Clock\SystemClock;
+use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\Duration\Duration;
 use Rasuvaeff\Resilience\Pipeline;
 use Rasuvaeff\Retry\Retry;
 
 // Configure the leaves as usual - the pipeline takes them ready-made and
 // knows nothing about stores, backends, or policies.
-$pipeline = Pipeline::for('stripe')
-    ->bulkhead($bulkhead)          // SharedBulkhead, configured by you
+$pipeline = Pipeline::for('billing')
+    ->bulkhead(new SharedBulkhead(
+        name: 'billing',
+        maxConcurrent: 2,
+        store: new InMemoryBulkheadStore(),
+        lease: Duration::seconds(5),
+        maxWait: Duration::zero(),
+    ))
     ->retry(
         Retry::new()
-            ->maxAttempts(maxAttempts: 4)
-            ->withExponential(baseMs: 100, multiplier: 2.0, capMs: 5_000),
+            ->maxAttempts(maxAttempts: 3)
+            ->withImmediate(),
     )
-    ->circuitBreaker($breaker)     // CircuitBreaker, configured by you
-    ->build();                     // immutable, reusable
+    ->circuitBreaker(new CircuitBreaker(
+        config: new BreakerConfig(
+            name: 'billing',
+            failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+            cooldown: Duration::seconds(30),
+            successThreshold: 1,
+            isFailure: static fn(\Throwable $e): bool => $e instanceof \RuntimeException,
+        ),
+        storage: new InMemoryStorage(),
+        clock: new SystemClock(),
+    ))
+    ->build(); // immutable, reusable
 
-$charge = $pipeline->call(fn() => $stripe->charges->create([/* ... */]));
+// A transient failure is retried to success:
+$attempt = 0;
+$pipeline->call(function () use (&$attempt): string {
+    if (++$attempt < 2) {
+        throw new \RuntimeException('transient error');
+    }
 
-// Optional fallback at the outermost level:
-$charge = $pipeline->call(
-    callback: fn() => $stripe->charges->create([/* ... */]),
-    fallback: fn(\Throwable $e) => ChargeResult::queuedForRetry(),
-);
+    return 'succeeded';
+}); // => "succeeded"
+$attempt; // => 2
+
+// Optional fallback at the outermost level receives the terminal exception:
+$pipeline->call(
+    callback: static fn(): string => 'primary',
+    fallback: static fn(\Throwable $e): string => $e instanceof CircuitOpenException ? 'degraded' : 'unexpected',
+); // => "primary"
 ```
 
 Every layer is optional, in any combination; an empty pipeline is a plain

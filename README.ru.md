@@ -50,31 +50,69 @@ composer require rasuvaeff/resilience
 
 ## Использование
 
-```php
+Блок ниже исполняемый — `composer build` прогоняет его против реального API
+через [rasuvaeff/doc-exec](https://github.com/rasuvaeff/doc-exec), так что
+значения `// =>` не могут протухнуть. Он использует in-memory backend'ы; в
+продакшене bulkhead и breaker указывают на Redis/APCu — код pipeline не
+меняется.
+
+```php doc-exec
+use Rasuvaeff\Bulkhead\InMemoryBulkheadStore;
 use Rasuvaeff\Bulkhead\SharedBulkhead;
+use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\CircuitOpenException;
+use Rasuvaeff\CircuitBreaker\Clock\SystemClock;
+use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\Duration\Duration;
 use Rasuvaeff\Resilience\Pipeline;
 use Rasuvaeff\Retry\Retry;
 
 // Листья настраиваются как обычно - pipeline берёт их готовыми и ничего
 // не знает о хранилищах, backend'ах и политиках.
-$pipeline = Pipeline::for('stripe')
-    ->bulkhead($bulkhead)          // SharedBulkhead, настроенный вами
+$pipeline = Pipeline::for('billing')
+    ->bulkhead(new SharedBulkhead(
+        name: 'billing',
+        maxConcurrent: 2,
+        store: new InMemoryBulkheadStore(),
+        lease: Duration::seconds(5),
+        maxWait: Duration::zero(),
+    ))
     ->retry(
         Retry::new()
-            ->maxAttempts(maxAttempts: 4)
-            ->withExponential(baseMs: 100, multiplier: 2.0, capMs: 5_000),
+            ->maxAttempts(maxAttempts: 3)
+            ->withImmediate(),
     )
-    ->circuitBreaker($breaker)     // CircuitBreaker, настроенный вами
-    ->build();                     // immutable, переиспользуемый
+    ->circuitBreaker(new CircuitBreaker(
+        config: new BreakerConfig(
+            name: 'billing',
+            failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+            cooldown: Duration::seconds(30),
+            successThreshold: 1,
+            isFailure: static fn(\Throwable $e): bool => $e instanceof \RuntimeException,
+        ),
+        storage: new InMemoryStorage(),
+        clock: new SystemClock(),
+    ))
+    ->build(); // immutable, переиспользуемый
 
-$charge = $pipeline->call(fn() => $stripe->charges->create([/* ... */]));
+// Transient-сбой повторяется до успеха:
+$attempt = 0;
+$pipeline->call(function () use (&$attempt): string {
+    if (++$attempt < 2) {
+        throw new \RuntimeException('transient error');
+    }
 
-// Опциональный fallback на самом внешнем уровне:
-$charge = $pipeline->call(
-    callback: fn() => $stripe->charges->create([/* ... */]),
-    fallback: fn(\Throwable $e) => ChargeResult::queuedForRetry(),
-);
+    return 'succeeded';
+}); // => "succeeded"
+$attempt; // => 2
+
+// Опциональный fallback на самом внешнем уровне получает терминальное исключение:
+$pipeline->call(
+    callback: static fn(): string => 'primary',
+    fallback: static fn(\Throwable $e): string => $e instanceof CircuitOpenException ? 'degraded' : 'unexpected',
+); // => "primary"
 ```
 
 Каждый слой опционален, в любом сочетании; пустой pipeline — обычный вызов

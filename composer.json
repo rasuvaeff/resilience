@@ -3,7 +3,6 @@
     "description": "Resilience pipeline for PHP: composes retry, circuit breaker, and bulkhead in the correct order with the exception glue built in",
     "license": "BSD-3-Clause",
     "type": "library",
-    "keywords": [],
     "authors": [
         {
             "name": "Victor Razuvaev",
@@ -27,6 +26,7 @@
         "friendsofphp/php-cs-fixer": "^3.95",
         "infection/infection": "^0.33",
         "maglnet/composer-require-checker": "^4.17",
+        "rasuvaeff/doc-exec": "^0.1",
         "rasuvaeff/property-testing-testo": "^0.6",
         "rasuvaeff/rector-named-literals": "^1.0",
         "rector/rector": "^2.4",
@@ -66,10 +66,12 @@
             "@require-checker",
             "@cs",
             "@psalm",
-            "@test"
+            "@test",
+            "@docs"
         ],
         "cs": "php-cs-fixer fix --dry-run --diff --config=.php-cs-fixer.php",
         "cs:fix": "php-cs-fixer fix --diff --config=.php-cs-fixer.php",
+        "docs": "php vendor/bin/doc-exec README.md README.ru.md",
         "mutation": "infection --threads=max",
         "psalm": "psalm --no-cache",
         "rector": "rector process --dry-run",

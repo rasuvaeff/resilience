@@ -32,6 +32,9 @@ use Rasuvaeff\Retry\Retry;
  */
 final readonly class Pipeline
 {
+    /**
+     * @param non-empty-string $name
+     */
     private function __construct(
         private string $name,
         private ?SharedBulkhead $bulkhead,
@@ -42,8 +45,8 @@ final readonly class Pipeline
     ) {}
 
     /**
-     * @param non-empty-string $name identifies this pipeline in exceptions
-     *                               and observability; not a storage key
+     * @param string $name identifies this pipeline in exceptions and
+     *                     observability; not a storage key; must be non-empty
      */
     public static function for(string $name): self
     {
