@@ -98,7 +98,7 @@ final readonly class Pipeline
 
     /**
      * Maps a rejection — `CircuitOpenException`, `BulkheadFullException`, or
-     * the breaker's `StorageFailure` ({@see Rejection::is()}) — to an
+     * a pre-call `StorageFailure` ({@see Rejection::is()}) — to an
      * exception of your domain, once per pipeline instead of a `try/catch`
      * per call site. Runs at the outermost level, before `fallback`; other
      * exceptions pass through untouched. Keep the rejection as `previous`

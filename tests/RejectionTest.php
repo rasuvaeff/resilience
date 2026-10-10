@@ -33,7 +33,11 @@ final class RejectionTest
 
         yield 'open circuit' => [$open, true];
         yield 'full bulkhead' => [new BulkheadFullException(name: 'svc', maxConcurrent: 1), true];
-        yield 'breaker storage failure' => [new StorageFailure(operation: 'admit', breakerName: 'svc', previous: new \RuntimeException('redis')), true];
+        yield 'breaker store failed on admit' => [new StorageFailure(operation: 'admit', breakerName: 'svc', previous: new \RuntimeException('redis')), true];
+        yield 'breaker store failed on the rejected-path snapshot' => [new StorageFailure(operation: 'snapshot', breakerName: 'svc', previous: new \RuntimeException('redis')), true];
+        yield 'breaker store failed recording a finished call' => [new StorageFailure(operation: 'recordOutcome', breakerName: 'svc', previous: new \RuntimeException('redis')), false];
+        yield 'breaker store failed recording a failed call' => [new StorageFailure(operation: 'recordOutcome', breakerName: 'svc', previous: new \RuntimeException('redis'), downstreamOutcome: new \RuntimeException('down')), false];
+        yield 'breaker store failed forcing state' => [new StorageFailure(operation: 'forceState', breakerName: 'svc', previous: new \RuntimeException('redis')), false];
         yield 'downstream failure' => [new \RuntimeException('down'), false];
         yield 'retry exhausted on a rejection' => [new RetryExhausted(attempts: 2, lastException: $open, history: [], reason: ExhaustionReason::MaxAttempts), false];
     }

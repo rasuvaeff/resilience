@@ -159,8 +159,8 @@ them ended the call.
 ### Rejections and domain exceptions
 
 A call can end without the callback ever running: the circuit is open, every
-slot is taken, or the breaker's store is down. `Rejection::is()` recognises
-exactly these three, and `Rejection::retryAfter()` turns the leaf's hint into
+slot is taken, or the breaker's store failed before the callback ran.
+`Rejection::is()` recognises exactly these three, and `Rejection::retryAfter()` turns the leaf's hint into
 a relative `Duration` for a `Retry-After` header or a re-queue delay.
 `onRejected()` maps them to your domain exception once per pipeline, instead
 of a `try/catch` around every call site:
@@ -203,6 +203,10 @@ Rejection::is(new \RuntimeException('HTTP 500')); // => false
 - The mapper runs at the outermost level, before `fallback`; the fallback
   receives the mapped exception. Any other exception passes through
   untouched.
+- A `StorageFailure` counts only when the store failed on `admit` or on
+  the rejected-path `snapshot`. One raised by `recordOutcome` means the
+  callback already ran and its result was not recorded: not a rejection,
+  because re-queueing it could execute a non-idempotent call twice.
 - `RetryExhausted` is never a rejection, even when its last attempt was:
   an earlier attempt may have reached the downstream.
 - `retryAfter()` is the time left until the circuit half-opens for
