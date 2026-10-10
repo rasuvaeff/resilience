@@ -137,9 +137,9 @@ final readonly class Pipeline
         return new CompiledPipeline(
             name: $this->name,
             bulkhead: $this->bulkhead,
-            retry: $this->retry === null
-                ? null
-                : CompiledPipeline::glued($this->retry, retryOnBulkheadFull: $this->retryOnBulkheadFull),
+            retry: $this->retry instanceof Retry
+                ? CompiledPipeline::glued($this->retry, retryOnBulkheadFull: $this->retryOnBulkheadFull)
+                : null,
             circuitBreaker: $this->circuitBreaker,
             order: $this->order,
             onRejected: $this->onRejected,

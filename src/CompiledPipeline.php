@@ -67,7 +67,7 @@ final readonly class CompiledPipeline
             ->stopIf(predicate: static fn(\Throwable $e): bool => $e instanceof StorageFailure);
 
         if (!$retryOnBulkheadFull) {
-            $retry = $retry->stopIf(predicate: static fn(\Throwable $e): bool => $e instanceof BulkheadFullException);
+            return $retry->stopIf(predicate: static fn(\Throwable $e): bool => $e instanceof BulkheadFullException);
         }
 
         return $retry;
