@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Add the `release.yml` workflow: a pushed `v*` tag on a master commit with green `PHP *` checks now gets a GitHub Release with its CHANGELOG section. Releases for v0.1.0–v0.2.1 were backfilled.
+
 ## 0.2.1 — 2026-10-10
 
 - Fix `Rejection::is()` (and so `onRejected()`) treating a `StorageFailure` raised while recording the outcome of a callback that already ran as "rejected without an attempt". Only `admit` and the rejected-path `snapshot` failures are rejections now; a `recordOutcome` failure passes through unmapped, so a caller does not re-queue a non-idempotent call that already reached the downstream (#8).
