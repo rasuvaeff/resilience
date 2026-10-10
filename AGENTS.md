@@ -7,7 +7,8 @@ Guidance for AI agents working on this package. Read before changing code.
 `rasuvaeff/resilience` (namespace `Rasuvaeff\Resilience`) is a thin
 composition layer over `rasuvaeff/retry`, `rasuvaeff/circuit-breaker`, and
 `rasuvaeff/bulkhead`: `Pipeline` (builder) → `CompiledPipeline`
-(immutable, reusable `call(callable, ?callable $fallback): mixed`). It
+(immutable, reusable, generic `call(callable, ?callable $fallback): T`),
+plus `Rejection` (classifies "rejected without an attempt"). It
 encodes the correct nesting order and the exception glue; it deliberately
 does NOT re-export or configure the leaves — they are passed in ready-made.
 
@@ -56,7 +57,9 @@ monorepo-root mount needed. `composer.lock` is gitignored (library).
   pins this.
 - **No pipeline-owned exceptions on purpose**: terminal exceptions of the
   leaves surface unchanged so `catch` sites written against the leaf
-  packages keep working. Do not add wrapper exceptions.
+  packages keep working. Do not add wrapper exceptions. `onRejected()` is
+  the one exception: an opt-in, user-supplied mapper that touches only
+  `Rejection::is()` exceptions — the pipeline still owns no exception type.
 - **The breaker's `isFailure` sees `BulkheadFullException`** (breaker wraps
   bulkhead). The README documents classifying it as not-a-failure; the
   pipeline cannot do it for the user (`isFailure` is required and entirely

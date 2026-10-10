@@ -38,8 +38,8 @@ without modifying the objects you pass in.
 ## Requirements
 
 - PHP 8.3+
-- `rasuvaeff/retry` ^1.2.3, `rasuvaeff/circuit-breaker` ^1.2,
-  `rasuvaeff/bulkhead` ^1.1.3, `rasuvaeff/duration` ^1.1 (installed
+- `rasuvaeff/retry` ^1.3, `rasuvaeff/circuit-breaker` ^1.3,
+  `rasuvaeff/bulkhead` ^1.3, `rasuvaeff/duration` ^1.1 (installed
   automatically)
 
 ## Installation
@@ -156,12 +156,70 @@ All terminal exceptions surface **unchanged** — `RetryExhausted`,
 callback's own exception. The optional `fallback` receives whichever of
 them ended the call.
 
+### Rejections and domain exceptions
+
+A call can end without the callback ever running: the circuit is open, every
+slot is taken, or the breaker's store is down. `Rejection::is()` recognises
+exactly these three, and `Rejection::retryAfter()` turns the leaf's hint into
+a relative `Duration` for a `Retry-After` header or a re-queue delay.
+`onRejected()` maps them to your domain exception once per pipeline, instead
+of a `try/catch` around every call site:
+
+```php doc-exec
+use Rasuvaeff\Bulkhead\BulkheadFullException;
+use Rasuvaeff\Bulkhead\InMemoryBulkheadStore;
+use Rasuvaeff\Bulkhead\SharedBulkhead;
+use Rasuvaeff\Duration\Duration;
+use Rasuvaeff\Resilience\Pipeline;
+use Rasuvaeff\Resilience\Rejection;
+
+final class BillingUnavailable extends \RuntimeException {}
+
+$store = new InMemoryBulkheadStore();
+$store->tryAcquire('billing', 1, Duration::seconds(5)); // the only slot is busy
+
+$pipeline = Pipeline::for('billing')
+    ->bulkhead(new SharedBulkhead(
+        name: 'billing',
+        maxConcurrent: 1,
+        store: $store,
+        lease: Duration::seconds(5),
+        maxWait: Duration::zero(),
+    ))
+    ->onRejected(static fn(\Throwable $e): \Throwable => new BillingUnavailable('billing is busy', previous: $e))
+    ->build();
+
+try {
+    $pipeline->call(static fn(): string => 'charged');
+} catch (BillingUnavailable $e) {
+    $e->getMessage(); // => "billing is busy"
+    Rejection::is($e->getPrevious()); // => true
+    Rejection::retryAfter($e->getPrevious())?->toMillis(); // => 5000
+}
+
+Rejection::is(new \RuntimeException('HTTP 500')); // => false
+```
+
+- The mapper runs at the outermost level, before `fallback`; the fallback
+  receives the mapped exception. Any other exception passes through
+  untouched.
+- `RetryExhausted` is never a rejection, even when its last attempt was:
+  an earlier attempt may have reached the downstream.
+- `retryAfter()` is the time left until the circuit half-opens for
+  `CircuitOpenException` (measured against the clock you pass, system clock
+  by default) and the slot lease, an upper bound, for
+  `BulkheadFullException`. It is `null` for `StorageFailure`.
+
+`call()` is generic: Psalm infers `string` above from the callback, no
+`@var` at the call site.
+
 ### Public API
 
 | Type | Description |
 |---|---|
-| `Pipeline` | Builder: `for(name)`, `bulkhead()`, `retry()`, `circuitBreaker()`, `breakerOutsideRetry()`, `retryOnBulkheadFull()`, `build()` |
-| `CompiledPipeline` | Immutable result: `call(callable, ?callable $fallback): mixed`, `name()` |
+| `Pipeline` | Builder: `for(name)`, `bulkhead(Bulkhead)`, `retry(Retry)`, `circuitBreaker(CircuitBreakerInterface)`, `onRejected(Closure)`, `breakerOutsideRetry()`, `retryOnBulkheadFull()`, `build()` |
+| `CompiledPipeline` | Immutable result: generic `call(callable(): T, ?callable(Throwable): T $fallback): T`, `name()` |
+| `Rejection` | `is(Throwable): bool`, `retryAfter(Throwable, ?ClockInterface): ?Duration` |
 | `PipelineOrder` | Enum: `BreakerInsideRetry`, `BreakerOutsideRetry` |
 
 ## Security

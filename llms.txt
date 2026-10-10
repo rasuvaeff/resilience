@@ -36,6 +36,18 @@ composer require rasuvaeff/resilience
 - The breaker's `isFailure` classifier sees `BulkheadFullException` (the
   breaker wraps the bulkhead) — classify it as not-a-failure unless local
   saturation should deliberately open the circuit.
+- `->onRejected(fn (\Throwable $r): \Throwable => new MyUnavailable(previous: $r))`:
+  maps ONLY rejections (`CircuitOpenException`, `BulkheadFullException`,
+  `StorageFailure`) at the outermost level, before `fallback` (which then
+  receives the mapped exception). Other exceptions pass through untouched.
+- `Rejection::is($e)`: true for the three rejections, false for
+  `RetryExhausted` (even when its last attempt was rejected) and anything
+  else. `Rejection::retryAfter($e, ?ClockInterface $clock = null): ?Duration`:
+  time until half-open for `CircuitOpenException`, the slot lease (upper
+  bound) for `BulkheadFullException`, `null` otherwise.
+- `bulkhead()` takes any `Rasuvaeff\Bulkhead\Bulkhead`; `circuitBreaker()` any
+  `Rasuvaeff\CircuitBreaker\CircuitBreakerInterface` (stubs/decorators OK).
+- `call()` is generic (`@template T`): returns the callback's type.
 - The pipeline itself does no I/O and defines no exception types.
 
 ## API reference
@@ -45,11 +57,12 @@ use Rasuvaeff\Resilience\Pipeline;
 use Rasuvaeff\Retry\Retry;
 
 $pipeline = Pipeline::for('stripe')          // non-empty name, for diagnostics
-    ->bulkhead($sharedBulkhead)              // ?Rasuvaeff\Bulkhead\SharedBulkhead
+    ->bulkhead($sharedBulkhead)              // Rasuvaeff\Bulkhead\Bulkhead (SharedBulkhead, decorator, stub)
     ->retry(Retry::new()->maxAttempts(maxAttempts: 4)->withExponential(baseMs: 100, multiplier: 2.0, capMs: 5_000))
-    ->circuitBreaker($circuitBreaker)        // ?Rasuvaeff\CircuitBreaker\CircuitBreaker
+    ->circuitBreaker($circuitBreaker)        // Rasuvaeff\CircuitBreaker\CircuitBreakerInterface
     ->breakerOutsideRetry()                  // optional order switch
     ->retryOnBulkheadFull()                  // optional glue opt-in
+    ->onRejected(fn (\Throwable $r): \Throwable => new StripeUnavailable(previous: $r))
     ->build();                               // CompiledPipeline (immutable, reusable)
 
 $result = $pipeline->call(fn(): mixed => doWork());
@@ -58,6 +71,10 @@ $result = $pipeline->call(
     fallback: fn(\Throwable $e): mixed => degrade($e),
 );
 $pipeline->name(); // 'stripe'
+
+use Rasuvaeff\Resilience\Rejection;
+Rejection::is($e);                       // bool
+Rejection::retryAfter($e, $clock);       // ?Rasuvaeff\Duration\Duration
 ```
 
 `PipelineOrder` enum: `BreakerInsideRetry` (default) | `BreakerOutsideRetry`.

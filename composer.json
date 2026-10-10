@@ -16,10 +16,11 @@
     },
     "require": {
         "php": "8.3 - 8.5",
-        "rasuvaeff/bulkhead": "^1.1.3",
-        "rasuvaeff/circuit-breaker": "^1.2",
+        "psr/clock": "^1.0",
+        "rasuvaeff/bulkhead": "^1.3",
+        "rasuvaeff/circuit-breaker": "^1.3",
         "rasuvaeff/duration": "^1.1",
-        "rasuvaeff/retry": "^1.2.3"
+        "rasuvaeff/retry": "^1.3"
     },
     "require-dev": {
         "ergebnis/composer-normalize": "^2.51",
