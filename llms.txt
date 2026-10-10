@@ -38,9 +38,11 @@ composer require rasuvaeff/resilience
   saturation should deliberately open the circuit.
 - `->onRejected(fn (\Throwable $r): \Throwable => new MyUnavailable(previous: $r))`:
   maps ONLY rejections (`CircuitOpenException`, `BulkheadFullException`,
-  `StorageFailure`) at the outermost level, before `fallback` (which then
+  pre-call `StorageFailure`) at the outermost level, before `fallback` (which then
   receives the mapped exception). Other exceptions pass through untouched.
-- `Rejection::is($e)`: true for the three rejections, false for
+- `Rejection::is($e)`: true for the three rejections. `StorageFailure` only
+  with `operation` `admit`/`snapshot`; `recordOutcome` = the callback already
+  ran, NOT a rejection. False for
   `RetryExhausted` (even when its last attempt was rejected) and anything
   else. `Rejection::retryAfter($e, ?ClockInterface $clock = null): ?Duration`:
   time until half-open for `CircuitOpenException`, the slot lease (upper
