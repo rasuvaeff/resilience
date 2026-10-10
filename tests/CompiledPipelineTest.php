@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Resilience\Tests;
 
+use Rasuvaeff\Bulkhead\Bulkhead;
 use Rasuvaeff\Bulkhead\BulkheadFullException;
 use Rasuvaeff\Bulkhead\InMemoryBulkheadStore;
 use Rasuvaeff\Bulkhead\SharedBulkhead;
@@ -11,11 +12,13 @@ use Rasuvaeff\CircuitBreaker\Admission;
 use Rasuvaeff\CircuitBreaker\AdmissionResult;
 use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\CircuitBreakerInterface;
 use Rasuvaeff\CircuitBreaker\CircuitOpenException;
 use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\CircuitTransition;
 use Rasuvaeff\CircuitBreaker\Clock\FakeClock;
 use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Metrics;
 use Rasuvaeff\CircuitBreaker\Outcome;
 use Rasuvaeff\CircuitBreaker\OutcomeResult;
 use Rasuvaeff\CircuitBreaker\Ratio;
@@ -441,6 +444,172 @@ final class CompiledPipelineTest
         }
 
         Assert::same($calls, 3);
+    }
+
+    public function onRejectedMapsAnOpenCircuit(): void
+    {
+        $clock = new FakeClock();
+        $pipeline = Pipeline::for('svc')
+            ->circuitBreaker($this->openedBreaker($clock))
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('svc unavailable', previous: $e))
+            ->build();
+
+        try {
+            $pipeline->call(static fn(): string => 'unreachable');
+            Assert::fail('Expected DomainException');
+        } catch (\DomainException $e) {
+            Assert::same($e->getMessage(), 'svc unavailable');
+            Assert::instanceOf($e->getPrevious(), CircuitOpenException::class);
+        }
+    }
+
+    public function onRejectedMapsAFullBulkhead(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->bulkhead($this->fullBulkhead())
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('busy', previous: $e))
+            ->build();
+
+        try {
+            $pipeline->call(static fn(): string => 'unreachable');
+            Assert::fail('Expected DomainException');
+        } catch (\DomainException $e) {
+            Assert::instanceOf($e->getPrevious(), BulkheadFullException::class);
+        }
+    }
+
+    public function onRejectedLeavesDownstreamFailuresUntouched(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('mapped', previous: $e))
+            ->build();
+
+        Expect::exception(\RuntimeException::class)->withMessage('down');
+
+        $pipeline->call(static fn(): string => throw new \RuntimeException('down'));
+    }
+
+    public function onRejectedLeavesRetryExhaustedUntouched(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->bulkhead($this->fullBulkhead())
+            ->retry($this->retry(maxAttempts: 2))
+            ->retryOnBulkheadFull()
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('mapped', previous: $e))
+            ->build();
+
+        Expect::exception(RetryExhausted::class);
+
+        $pipeline->call(static fn(): string => 'unreachable');
+    }
+
+    public function fallbackReceivesTheMappedRejection(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->circuitBreaker($this->openedBreaker(new FakeClock()))
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('mapped', previous: $e))
+            ->build();
+
+        $result = $pipeline->call(
+            callback: static fn(): string => 'unreachable',
+            fallback: static fn(\Throwable $e): string => $e::class . ':' . $e->getMessage(),
+        );
+
+        Assert::same($result, \DomainException::class . ':mapped');
+    }
+
+    public function onRejectedReplacesOnRepeatedCalls(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->bulkhead($this->fullBulkhead())
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \LogicException('first', previous: $e))
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('second', previous: $e))
+            ->build();
+
+        Expect::exception(\DomainException::class)->withMessage('second');
+
+        $pipeline->call(static fn(): string => 'unreachable');
+    }
+
+    public function onRejectedSurvivesLaterBuilderCalls(): void
+    {
+        $pipeline = Pipeline::for('svc')
+            ->onRejected(static fn(\Throwable $e): \Throwable => new \DomainException('mapped', previous: $e))
+            ->bulkhead($this->fullBulkhead())
+            ->retry($this->retry(maxAttempts: 2))
+            ->circuitBreaker($this->breaker(failures: 5, window: 10))
+            ->breakerOutsideRetry()
+            ->build();
+
+        Expect::exception(\DomainException::class)->withMessage('mapped');
+
+        $pipeline->call(static fn(): string => 'unreachable');
+    }
+
+    public function anyBulkheadAndBreakerImplementationIsAccepted(): void
+    {
+        $bulkhead = new class implements Bulkhead {
+            public int $calls = 0;
+
+            #[\Override]
+            public function call(callable $callback): mixed
+            {
+                ++$this->calls;
+
+                return $callback();
+            }
+
+            #[\Override]
+            public function availableSlots(): int
+            {
+                return 1;
+            }
+        };
+        $breaker = new class implements CircuitBreakerInterface {
+            public int $calls = 0;
+
+            #[\Override]
+            public function call(callable $callback, ?callable $fallback = null): mixed
+            {
+                ++$this->calls;
+
+                return $callback();
+            }
+
+            #[\Override]
+            public function canCall(): bool
+            {
+                return true;
+            }
+
+            #[\Override]
+            public function state(): CircuitState
+            {
+                return CircuitState::Closed;
+            }
+
+            #[\Override]
+            public function metrics(): Metrics
+            {
+                throw new \LogicException('not used');
+            }
+
+            #[\Override]
+            public function forceOpen(): void {}
+
+            #[\Override]
+            public function forceClosed(): void {}
+        };
+
+        $result = Pipeline::for('svc')
+            ->bulkhead($bulkhead)
+            ->circuitBreaker($breaker)
+            ->build()
+            ->call(static fn(): string => 'ok');
+
+        Assert::same($result, 'ok');
+        Assert::same($bulkhead->calls, 1);
+        Assert::same($breaker->calls, 1);
     }
 
     private function retry(int $maxAttempts, ?SleeperInterface $sleeper = null): Retry

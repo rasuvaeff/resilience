@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Resilience;
 
+use Rasuvaeff\Bulkhead\Bulkhead;
 use Rasuvaeff\Bulkhead\BulkheadFullException;
-use Rasuvaeff\Bulkhead\SharedBulkhead;
-use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\CircuitBreakerInterface;
 use Rasuvaeff\CircuitBreaker\CircuitOpenException;
 use Rasuvaeff\CircuitBreaker\StorageFailure;
 use Rasuvaeff\Retry\Retry;
@@ -34,15 +34,17 @@ final readonly class CompiledPipeline
 {
     /**
      * @param non-empty-string $name
+     * @param (\Closure(\Throwable): \Throwable)|null $onRejected
      *
      * @internal construct via {@see Pipeline::build()}
      */
     public function __construct(
         private string $name,
-        private ?SharedBulkhead $bulkhead,
+        private ?Bulkhead $bulkhead,
         private ?Retry $retry,
-        private ?CircuitBreaker $circuitBreaker,
+        private ?CircuitBreakerInterface $circuitBreaker,
         private PipelineOrder $order,
+        private ?\Closure $onRejected = null,
     ) {}
 
     /**
@@ -65,7 +67,7 @@ final readonly class CompiledPipeline
             ->stopIf(predicate: static fn(\Throwable $e): bool => $e instanceof StorageFailure);
 
         if (!$retryOnBulkheadFull) {
-            $retry = $retry->stopIf(predicate: static fn(\Throwable $e): bool => $e instanceof BulkheadFullException);
+            return $retry->stopIf(predicate: static fn(\Throwable $e): bool => $e instanceof BulkheadFullException);
         }
 
         return $retry;
@@ -84,10 +86,16 @@ final readonly class CompiledPipeline
      * `$fallback` is applied at the outermost level and receives the terminal
      * exception of whichever layer gave up: `RetryExhausted`,
      * `CircuitOpenException`, `BulkheadFullException`, `StorageFailure`, or
-     * the callback's own exception when no layer handles it.
+     * the callback's own exception when no layer handles it. When an
+     * `onRejected` mapper is configured, a rejection ({@see Rejection::is()})
+     * is mapped first and the fallback receives the mapped exception.
      *
-     * @param callable(): mixed $callback
-     * @param (callable(\Throwable): mixed)|null $fallback
+     * @template T
+     *
+     * @param callable(): T $callback
+     * @param (callable(\Throwable): T)|null $fallback
+     *
+     * @return T
      */
     public function call(callable $callback, ?callable $fallback = null): mixed
     {
@@ -97,7 +105,7 @@ final readonly class CompiledPipeline
         // runs — never while retry sleeps between attempts, so waiting
         // workers don't starve the downstream's concurrency budget.
         $bulkhead = $this->bulkhead;
-        if ($bulkhead instanceof SharedBulkhead) {
+        if ($bulkhead instanceof Bulkhead) {
             $inner = $operation;
             $operation = static fn(): mixed => $bulkhead->call(callback: $inner);
         }
@@ -107,7 +115,7 @@ final readonly class CompiledPipeline
         $circuitBreaker = $this->circuitBreaker;
         $retry = $this->retry;
 
-        if ($circuitBreaker instanceof CircuitBreaker && $this->order === PipelineOrder::BreakerInsideRetry) {
+        if ($circuitBreaker instanceof CircuitBreakerInterface && $this->order === PipelineOrder::BreakerInsideRetry) {
             $inner = $operation;
             $operation = static fn(): mixed => $circuitBreaker->call(callback: $inner);
         }
@@ -117,9 +125,25 @@ final readonly class CompiledPipeline
             $operation = static fn(): mixed => $retry->run(operation: $inner);
         }
 
-        if ($circuitBreaker instanceof CircuitBreaker && $this->order === PipelineOrder::BreakerOutsideRetry) {
+        if ($circuitBreaker instanceof CircuitBreakerInterface && $this->order === PipelineOrder::BreakerOutsideRetry) {
             $inner = $operation;
             $operation = static fn(): mixed => $circuitBreaker->call(callback: $inner);
+        }
+
+        $onRejected = $this->onRejected;
+        if ($onRejected instanceof \Closure) {
+            $inner = $operation;
+            $operation = static function () use ($inner, $onRejected): mixed {
+                try {
+                    return $inner();
+                } catch (\Throwable $e) {
+                    if (!Rejection::is($e)) {
+                        throw $e;
+                    }
+
+                    throw $onRejected($e);
+                }
+            };
         }
 
         if ($fallback === null) {
