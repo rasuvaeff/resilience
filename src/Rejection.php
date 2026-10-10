@@ -52,7 +52,7 @@ final readonly class Rejection
         }
 
         return $e instanceof StorageFailure
-            && \in_array($e->operation, self::PRE_CALL_STORAGE_OPERATIONS, true);
+            && \in_array($e->operation, self::PRE_CALL_STORAGE_OPERATIONS, strict: true);
     }
 
     /**
