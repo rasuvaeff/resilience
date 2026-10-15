@@ -80,3 +80,19 @@ Rejection::retryAfter($e, $clock);       // ?Rasuvaeff\Duration\Duration
 ```
 
 `PipelineOrder` enum: `BreakerInsideRetry` (default) | `BreakerOutsideRetry`.
+
+## Under a context budget (0.3.0)
+
+```php
+$result = $pipeline->call(
+    static fn(Context $ctx): mixed => doWork($ctx),   // ctx passed ONLY when context: is given
+    fallback: $fallback,                               // skipped only when THIS context is cancelled
+    context: $requestContext,
+);
+// assertActive() first; retry->withContext() checks before each attempt;
+// ContextAwareBulkhead (SharedBulkhead) waits ≤ budget → ContextExpiredException, not BulkheadFullException.
+// Rejection::is(ContextException) === false; onRejected never maps it.
+
+new BreakerConfig(..., isFailure: ContextOutcome::ignoring(fn (\Throwable $e): bool => ...));
+// a context expiring INSIDE the call reaches isFailure; ContextException extends RuntimeException
+```

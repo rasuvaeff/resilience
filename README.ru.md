@@ -219,12 +219,59 @@ Rejection::is(new \RuntimeException('HTTP 500')); // => false
 `call()` generic: Psalm выводит `string` выше из callback'а, `@var` в месте
 вызова не нужен.
 
+### Под бюджетом запроса (`rasuvaeff/context`)
+
+Без контекста у каждого слоя своё понятие времени — `stopAfterMs` у retry,
+`maxWait` у bulkhead, у breaker'а никакого — и ни один не видит бюджета
+запроса: запрос, у которого осталось 300 мс, может прождать слот 200 мс, а
+потом ещё 400 мс паузы между попытками. Передайте контекст запроса из
+[`rasuvaeff/context`](https://github.com/rasuvaeff/context), и ему подчинится
+каждый слой:
+
+```php
+$charge = $pipeline->call(
+    static fn(Context $context): Charge => $stripe->charge($payload, $context),
+    context: $requestContext,
+);
+```
+
+| Слой | Под контекстом |
+|---|---|
+| Старт | `assertActive()` — завершённый контекст ничего не запускает |
+| Retry | `withContext()`: проверка перед каждой попыткой, паузы обрываются вместе с бюджетом, исключение контекста не повторяется |
+| Circuit breaker | Контекст, завершённый до старта вызова, до breaker'а не доходит (проверка на старте и проверка retry перед каждой попыткой). Завершившийся посреди вызова — в том числе по сигналу — попадает в его `isFailure`: см. `ContextOutcome` ниже |
+| Bulkhead | `ContextAwareBulkhead` (`SharedBulkhead`) ждёт слот не дольше бюджета и завершается исключением контекста, а не `BulkheadFullException`; любой другой `Bulkhead` вызывается как раньше |
+| Callback | Получает контекст — передайте его дальше в транспорт (`ContextClient`, `ContextClickHouseClient`, `context-db`). Без `context:` он не получает ничего, поэтому внутренние функции PHP продолжают работать |
+| `fallback` | Пропускается, когда отменён *этот* контекст (вызывающего уже нет); вызывается, когда он истёк (закешированный ответ ещё может пригодиться), и для любого другого исключения, как раньше |
+
+Исключения контекста — не отказы: `Rejection::is()` возвращает `false`, и
+`onRejected` их не преобразует.
+
+**Классификация breaker'а остаётся вашей.** Контекст, истёкший *внутри*
+вызова, доходит до `isFailure` breaker'а — а `ContextException` наследует
+`RuntimeException`, поэтому широкий классификатор засчитает короткий бюджет
+клиента как отказ зависимости и откроет цепь для всех. Оберните свой
+классификатор:
+
+```php
+use Rasuvaeff\Resilience\ContextOutcome;
+
+new BreakerConfig(
+    // ...
+    isFailure: ContextOutcome::ignoring(static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface),
+);
+```
+
+Конвейер никогда не превращает исключение контекста в успех: half-open
+проба, у которой кончился бюджет вызывающего, закрыла бы цепь.
+
 ### Публичный API
 
 | Тип | Описание |
 |---|---|
 | `Pipeline` | Builder: `for(name)`, `bulkhead(Bulkhead)`, `retry(Retry)`, `circuitBreaker(CircuitBreakerInterface)`, `onRejected(Closure)`, `breakerOutsideRetry()`, `retryOnBulkheadFull()`, `build()` |
-| `CompiledPipeline` | Immutable-результат: generic `call(callable(): T, ?callable(Throwable): T $fallback): T`, `name()` |
+| `CompiledPipeline` | Immutable-результат: generic `call(callable(): T, ?callable(Throwable): T $fallback, ?Context $context): T`, `name()` |
+| `ContextOutcome` | `ignoring(callable $isFailure): Closure` — классификатор для breaker'а, который никогда не считает исключение контекста отказом |
 | `Rejection` | `is(Throwable): bool`, `retryAfter(Throwable, ?ClockInterface): ?Duration` |
 | `PipelineOrder` | Enum: `BreakerInsideRetry`, `BreakerOutsideRetry` |
 
