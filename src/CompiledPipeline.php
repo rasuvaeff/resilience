@@ -6,9 +6,12 @@ namespace Rasuvaeff\Resilience;
 
 use Rasuvaeff\Bulkhead\Bulkhead;
 use Rasuvaeff\Bulkhead\BulkheadFullException;
+use Rasuvaeff\Bulkhead\ContextAwareBulkhead;
 use Rasuvaeff\CircuitBreaker\CircuitBreakerInterface;
 use Rasuvaeff\CircuitBreaker\CircuitOpenException;
 use Rasuvaeff\CircuitBreaker\StorageFailure;
+use Rasuvaeff\Context\Context;
+use Rasuvaeff\Context\ContextCancelledException;
 use Rasuvaeff\Retry\Retry;
 
 /**
@@ -90,21 +93,39 @@ final readonly class CompiledPipeline
      * `onRejected` mapper is configured, a rejection ({@see Rejection::is()})
      * is mapped first and the fallback receives the mapped exception.
      *
+     * With a `$context` (rasuvaeff/context) every layer obeys its budget: the
+     * context is checked before anything starts, retry runs `withContext()`
+     * (checked before each attempt, context-aware backoff, context exceptions
+     * never retried), a
+     * {@see ContextAwareBulkhead} caps its slot wait by the budget, and the
+     * callback receives the context. The cancellation of this `$context`
+     * skips `$fallback` — the caller is gone; its expiry reaches it (a cached
+     * answer may still be worth returning). A context terminated before the
+     * call starts never reaches the breaker; one terminating mid-call reaches
+     * its `isFailure` — see {@see ContextOutcome}.
+     *
      * @template T
      *
-     * @param callable(): T $callback
+     * @param callable(Context=): T $callback receives the context only when one is given
      * @param (callable(\Throwable): T)|null $fallback
      *
      * @return T
      */
-    public function call(callable $callback, ?callable $fallback = null): mixed
+    public function call(callable $callback, ?callable $fallback = null, ?Context $context = null): mixed
     {
-        $operation = $callback(...);
+        // An extra argument would break an internal-function callback, so the
+        // context is passed only when the caller asked for one.
+        $operation = $context instanceof Context
+            ? static fn(): mixed => $callback($context)
+            : static fn(): mixed => $callback();
 
         // Innermost: a slot is occupied only while the callback actually
         // runs — never while retry sleeps between attempts, so waiting
         // workers don't starve the downstream's concurrency budget.
         $bulkhead = $this->bulkhead;
+        if ($bulkhead instanceof ContextAwareBulkhead && $context instanceof Context) {
+            $bulkhead = $bulkhead->withContext($context);
+        }
         if ($bulkhead instanceof Bulkhead) {
             $inner = $operation;
             $operation = static fn(): mixed => $bulkhead->call(callback: $inner);
@@ -121,6 +142,9 @@ final readonly class CompiledPipeline
         }
 
         if ($retry instanceof Retry) {
+            if ($context instanceof Context) {
+                $retry = $retry->withContext($context);
+            }
             $inner = $operation;
             $operation = static fn(): mixed => $retry->run(operation: $inner);
         }
@@ -128,6 +152,15 @@ final readonly class CompiledPipeline
         if ($circuitBreaker instanceof CircuitBreakerInterface && $this->order === PipelineOrder::BreakerOutsideRetry) {
             $inner = $operation;
             $operation = static fn(): mixed => $circuitBreaker->call(callback: $inner);
+        }
+
+        if ($context instanceof Context) {
+            $inner = $operation;
+            $operation = static function () use ($inner, $context): mixed {
+                $context->assertActive();
+
+                return $inner();
+            };
         }
 
         $onRejected = $this->onRejected;
@@ -153,6 +186,13 @@ final readonly class CompiledPipeline
         try {
             return $operation();
         } catch (\Throwable $e) {
+            // Only the cancellation of THIS call's context skips the fallback;
+            // without a context, or for some inner context, it is an ordinary
+            // exception and the fallback keeps its catch-all contract.
+            if ($e instanceof ContextCancelledException && $context?->isCancelled() === true) {
+                throw $e;
+            }
+
             return $fallback($e);
         }
     }

@@ -17,15 +17,16 @@
     "require": {
         "php": "8.3 - 8.5",
         "psr/clock": "^1.0",
-        "rasuvaeff/bulkhead": "^1.3",
+        "rasuvaeff/bulkhead": "^1.4",
         "rasuvaeff/circuit-breaker": "^1.3",
+        "rasuvaeff/context": "^0.3",
         "rasuvaeff/duration": "^1.1",
         "rasuvaeff/retry": "^1.3"
     },
     "require-dev": {
         "ergebnis/composer-normalize": "^2.51",
         "friendsofphp/php-cs-fixer": "^3.95",
-        "infection/infection": "^0.33",
+        "infection/infection": "^0.35",
         "maglnet/composer-require-checker": "^4.17",
         "rasuvaeff/doc-exec": "^0.1",
         "rasuvaeff/rector-named-literals": "^1.0",

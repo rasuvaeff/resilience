@@ -44,7 +44,7 @@ docker run --rm -v "$PWD":/app -w /app composer:2 composer release-check
 Or with Make: `make build`, `make cs-fix`, `make psalm`, `make test`,
 `make test-coverage`, `make mutation`, `make release-check`.
 
-All four dependencies (retry, circuit-breaker, bulkhead, duration) are normal Packagist packages — no path-repo, no
+All dependencies (retry, circuit-breaker, bulkhead, duration, context) are normal Packagist packages — no path-repo, no
 monorepo-root mount needed. `composer.lock` is gitignored (library).
 
 ## Invariants & gotchas
@@ -64,9 +64,22 @@ monorepo-root mount needed. `composer.lock` is gitignored (library).
   bulkhead). The README documents classifying it as not-a-failure; the
   pipeline cannot do it for the user (`isFailure` is required and entirely
   theirs).
-- `fallback` is outermost and catches `\Throwable` — including the
-  callback's own exception when no layer is configured. That is documented
-  behavior, not an accident.
+- **Under a context** (`call(..., context:)`): checked outermost (a context
+  terminated before the call never reaches the breaker; one terminating
+  mid-call does reach `isFailure` — no check can close that window, which is
+  why `ContextOutcome::ignoring()` exists); retry gets `withContext()` per call (Retry is immutable,
+  so the compiled pipeline stays reusable); a `ContextAwareBulkhead` gets
+  `withContext()`; the callback receives the context ONLY when one is given
+  (an extra argument breaks internal-function callbacks). Never turn a
+  context exception into a breaker success — a half-open probe out of the
+  caller's budget would close the circuit; `ContextOutcome::ignoring()` is
+  the user-side answer.
+- `fallback` is outermost and catches `\Throwable`, including the callback's
+  own exception when no layer is configured. That is documented behavior, not
+  an accident. The one exception is the cancellation of the context passed
+  to THIS call (`$context?->isCancelled()`): it skips the fallback, because
+  the caller is gone. Without a context, or for an inner context, a
+  `ContextCancelledException` is an ordinary exception.
 - Tests use the real in-memory implementations of the leaves
   (`InMemoryStorage`, `InMemoryBulkheadStore`, `FakeClock`, `FakeSleeper`) —
   not mocks. No `tests/Integration/`: the pipeline does no I/O; the leaves'
