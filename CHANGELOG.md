@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `CompiledPipeline::call(..., ?Context $context)`: every layer obeys a `rasuvaeff/context` budget (#11). The context is checked before anything starts; retry runs `withContext()`; a `ContextAwareBulkhead` caps its slot wait by the budget; the callback receives the context (only when one is given). `fallback` is skipped only when this call's context is cancelled; its expiry, and everything without a context, still reach the fallback. `Rejection::is()` stays `false` for context exceptions.
 - Add `ContextOutcome::ignoring()`: wraps a breaker `isFailure` so a context exception is never a failure — the pipeline cannot change your breaker's classification itself.
-- Requires `rasuvaeff/bulkhead` ^1.4 and `rasuvaeff/context` ^0.3.
+- Requires `rasuvaeff/bulkhead` ^1.4, `rasuvaeff/context` ^0.3 and `rasuvaeff/retry` ^1.6.2 (`Retry::withContext()`, the first retry that installs next to context 0.3).
 - CI: experimental PHP 8.6 job (RC, tests only, not required).
 
 - Add the `release.yml` workflow: a pushed `v*` tag on a master commit with green `PHP *` checks now gets a GitHub Release with its CHANGELOG section. Releases for v0.1.0–v0.2.1 were backfilled.
