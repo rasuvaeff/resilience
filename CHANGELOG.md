@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Mutation testing now counts code the tests execute but do not name in `#[Covers]` (`infection --threads=max --with-uncovered`); the `PublicVisibility` mutator is off and default values in parameter lists are ignored. No `src/` changes.
+
 ## 0.3.0 — 2026-10-15
 
 - Add `CompiledPipeline::call(..., ?Context $context)`: every layer obeys a `rasuvaeff/context` budget (#11). The context is checked before anything starts; retry runs `withContext()`; a `ContextAwareBulkhead` caps its slot wait by the budget; the callback receives the context (only when one is given). `fallback` is skipped only when this call's context is cancelled; its expiry, and everything without a context, still reach the fallback. `Rejection::is()` stays `false` for context exceptions.
