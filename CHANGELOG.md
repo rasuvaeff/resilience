@@ -5,8 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.1 — 2026-11-21
 
+- Allow `rasuvaeff/context` ^0.4 and ^0.5.
 - Mutation testing now counts code the tests execute but do not name in `#[Covers]` (`infection --threads=max --with-uncovered`); the `PublicVisibility` mutator is off and default values in parameter lists are ignored. No `src/` changes.
 
 ## 0.3.0 — 2026-10-15
