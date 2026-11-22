@@ -13,7 +13,7 @@ composer require rasuvaeff/resilience
 
 ## Rules
 
-- PHP 8.3+, `declare(strict_types=1)`, immutable `final readonly` classes.
+- PHP 8.3 – 8.6, `declare(strict_types=1)`, immutable `final readonly` classes.
 - Default nesting: `retry(circuitBreaker(bulkhead(callback)))`. Bulkhead is
   INNERMOST — a slot is occupied only while the callback runs, re-requested
   per attempt, free during retry sleeps. The breaker wraps the bulkhead, so
