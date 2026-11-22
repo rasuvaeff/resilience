@@ -15,7 +15,7 @@
         "source": "https://github.com/rasuvaeff/resilience"
     },
     "require": {
-        "php": "8.3 - 8.5",
+        "php": "8.3 - 8.6",
         "psr/clock": "^1.0",
         "rasuvaeff/bulkhead": "^1.4",
         "rasuvaeff/circuit-breaker": "^1.3",

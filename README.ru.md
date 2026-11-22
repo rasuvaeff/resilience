@@ -37,7 +37,7 @@ Resilience-pipeline для PHP: композирует [`rasuvaeff/retry`](https
 
 ## Требования
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - `rasuvaeff/retry` ^1.3, `rasuvaeff/circuit-breaker` ^1.3,
   `rasuvaeff/bulkhead` ^1.3, `rasuvaeff/duration` ^1.1 (ставятся
   автоматически)
